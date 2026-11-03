@@ -34,6 +34,7 @@ class AIConfig:
 def load_config() -> AIConfig:
     # Read on every action so saving .env takes effect without a server restart.
     local = dotenv_values(ROOT / ".env", interpolate=False)
+    defaults = {"AI_BASE_URL": "https://api.deepseek.com", "AI_MODEL": "deepseek-flash"}
     def read(name: str) -> str:
-        return str(os.environ.get(name, local.get(name)) or "").strip()
+        return str(os.environ.get(name, local.get(name)) or defaults.get(name, "")).strip()
     return AIConfig(read("AI_BASE_URL").rstrip("/"), read("AI_MODEL"), read("AI_API_KEY"))

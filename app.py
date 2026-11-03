@@ -10,10 +10,11 @@ from src.http_client import ServiceError
 from src.models import parse_time
 from src.ai_jobs import SummaryJob
 from src.session_results import SessionResults, filter_records, MAX_SESSION_PAPERS
-from src.search_terms import SearchTermError, expansion_label
+from src.search_terms import SearchTermError, expansion_label, needs_translation
+from src.query_translation import translate_query
 
 st.set_page_config(page_title="车辆预测文献追踪", page_icon="📖", layout="wide")
-st.markdown(f"<style>{(ROOT / 'assets' / 'style.css').read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+st.markdown(f"<style>{(ROOT / 'src' / 'style.css').read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
 
 
 def show_report(report):
@@ -105,8 +106,22 @@ def online_request(store, *, keyword, days, profile, limit, auto_ai, previous=No
     """Explicit actions only; the display and filters never call the APIs."""
     end = parse_time(previous["end"]) if previous else None
     offset = previous["next_start"] if previous else 0
+    resolved = previous.get("resolved_keyword", keyword) if previous else keyword
+    query_note = previous.get("query_note", "") if previous else ""
+    translation_failed = previous.get("translation_failed", False) if previous else False
+    if previous is None and needs_translation(keyword):
+        job = st.session_state.get("ai_job")
+        try:
+            if job and job.busy:
+                raise ServiceError("前一条 AI 请求尚未结束，未启动重复翻译。")
+            with st.spinner("正在将中文关键词转换为英文检索词……"):
+                resolved = translate_query(keyword, load_config())
+            query_note = f"关键词翻译：{keyword} → {resolved}"
+        except (ConfigurationError, ServiceError) as exc:
+            translation_failed = True
+            query_note = f"关键词翻译暂不可用，已按原词联网检索：{keyword}。arXiv 以英文材料为主，结果可能较少；也可直接输入英文。{exc}"
     with st.spinner("正在检索 arXiv，获取论文标题与原摘要……"):
-        result = fetch_papers(days, profile, limit, keyword=keyword, offset=offset, end=end)
+        result = fetch_papers(days, profile, limit, keyword=resolved, offset=offset, end=end)
     if previous is None:
         cancel_ai()
         store.clear()
@@ -120,6 +135,8 @@ def online_request(store, *, keyword, days, profile, limit, auto_ai, previous=No
         "start": result.start.isoformat(), "end": result.end.isoformat(),
         "query": result.query, "keyword": keyword, "profile": profile,
         "days": days, "limit": limit, "next_start": result.next_start,
+        "resolved_keyword": resolved, "query_note": query_note,
+        "translation_failed": translation_failed,
     }
     if auto_ai and new_ids:
         run_ai([r for r in store.all() if r["id"] in set(new_ids)], store)
@@ -197,7 +214,7 @@ def main():
             st.warning("填写 AI 配置后可生成结构化摘要，联网检索仍可使用。")
         with st.expander("AI 配置说明", expanded=not configured):
             st.write("在项目 .env 的 AI_API_KEY= 后填写密钥并保存。")
-            st.caption("基础地址与模型已预填。配置是否可用以实际调用为准。")
+            st.caption("默认使用 DeepSeek 官方地址与 deepseek-flash。配置是否可用以实际调用为准。")
         st.markdown('<div class="session-note"><b>轻量使用，按需阅读</b><br>结果仅在当前页面会话展示。<br>不自动保存，刷新后清空。</div>', unsafe_allow_html=True)
 
     st.markdown(
@@ -239,6 +256,7 @@ def main():
             for area, value, key in [(term1, "图神经网络", "quick_gnn"), (term2, "车辆轨迹预测", "quick_trajectory"), (term3, "加速度预测", "quick_acceleration")]:
                 area.button(value + " ↗", key=key, on_click=choose_keyword, args=(value,), use_container_width=True,
                             help="填入关键词，再点击联网检索。")
+        st.caption("支持中英文自由输入；不常见中文会调用 AI 翻译，失败时按原词检索。英文多词按交集匹配，双引号保留短语。")
         st.markdown(f'<div class="search-context"><span>当前范围</span>{html.escape(profile)}<span class="context-divider">/</span>最近 {int(days)} 天</div>', unsafe_allow_html=True)
 
     try:
@@ -282,6 +300,11 @@ def main():
             unsafe_allow_html=True,
         )
         st.caption(f'本轮检索：{search["keyword"] or "领域预设"}；{search["profile"]}，最近 {search["days"]} 天。')
+        if search.get("query_note"):
+            if search.get("translation_failed"):
+                st.warning(search["query_note"])
+            else:
+                st.caption(search["query_note"])
         with st.container(key="results_toolbar"):
             status_filter, reset_action = st.columns([4, 1.3], vertical_alignment="bottom")
             code = status_filter.selectbox("代码开源状态", ["全部", "Yes", "No", "Unknown"],
@@ -331,7 +354,7 @@ def main():
                 if at_capacity:
                     st.caption("当前会话最多展示 200 篇，可清空后重新检索。")
         with st.expander("检索详情与术语展开"):
-            st.text("实际检索词：" + expansion_label(search["keyword"]))
+            st.text("实际检索词：" + expansion_label(search.get("resolved_keyword", search["keyword"])))
             st.text(f'首次提交时间 UTC：{search["start"]} 至 {search["end"]}')
             st.code(search["query"], language="text")
             st.caption("API 命中表示符合索引查询条件，论文相关性与 AI 摘要请结合原文核对。")

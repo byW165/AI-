@@ -37,8 +37,9 @@ def search_groups(keyword: str) -> list[tuple[str, ...]]:
     if canonical in CONCEPTS:
         return [CONCEPTS[canonical]]
     if not re.search(r"[\u4e00-\u9fff]", value):
-        # Preserve an English scientific phrase as one concept.
-        return [(value,)]
+        # Free words combine with AND; quoted phrases remain one concept.
+        tokens = re.findall(r'"([^\"]+)"|(\S+)', value)
+        return [(phrase or word,) for phrase, word in tokens]
     groups = []
     remaining = value
     for name in sorted(CONCEPTS, key=len, reverse=True):
@@ -47,21 +48,28 @@ def search_groups(keyword: str) -> list[tuple[str, ...]]:
             remaining = remaining.replace(name, " ")
     remaining = re.sub(r"(?:基于|以及|研究|方法|论文|的|和|与|及)", " ", remaining).strip(" ,，、;；")
     if re.search(r"[\u4e00-\u9fff]", remaining):
-        raise SearchTermError("这个中文词暂未收录术语表，请补充英文关键词。支持如“图神经网络”“图注意力网络”“加速度预测”“轨迹预测”。")
+        # Unknown terms remain searchable. The UI may translate this original
+        # query before requesting arXiv; translation failures keep literal terms.
+        groups.append((remaining.strip(),))
+        return groups
     if remaining.strip():
         groups.append((remaining.strip(),))
     if not groups:
-        raise SearchTermError("请输入具体研究术语或英文关键词。")
+        return [(value,)]
     return groups
+
+
+def needs_translation(keyword: str) -> bool:
+    """Only concepts without any English alternative need an AI translation."""
+    return any(all(re.search(r"[\u4e00-\u9fff]", term) for term in group)
+               for group in search_groups(keyword))
 
 
 def keyword_query(keyword: str) -> str:
     groups = search_groups(keyword)
     expressions = []
     for group in groups:
-        terms = [t for t in group if not re.search(r"[\u4e00-\u9fff]", t)]
-        if not terms:
-            raise SearchTermError("联网检索需要可识别的英文科研术语。")
+        terms = [t for t in group if not re.search(r"[\u4e00-\u9fff]", t)] or list(group)
         alternatives = []
         for term in terms:
             safe = term.replace('"', " ").replace("\\", " ")
@@ -74,6 +82,6 @@ def expansion_label(keyword: str) -> str:
     groups = search_groups(keyword)
     if not groups:
         return "按所选研究范围检索"
-    return "；并且 ".join(" / ".join(t for t in group if not re.search(r"[\u4e00-\u9fff]", t)) for group in groups)
+    return "；并且 ".join(" / ".join([t for t in group if not re.search(r"[\u4e00-\u9fff]", t)] or list(group)) for group in groups)
 
 
