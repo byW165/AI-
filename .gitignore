@@ -1,0 +1,21 @@
+# Personal configuration
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+# Local environment and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+# Runtime results
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.log
+data/
+outputs/
+_validation/
